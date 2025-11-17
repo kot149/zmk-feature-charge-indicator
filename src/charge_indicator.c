@@ -13,26 +13,12 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
+#include <zmk/battery.h>
+#include <zmk/event_manager.h>
+#include <zmk/events/battery_state_changed.h>
 
-LOG_MODULE_REGISTER(charge_indicator, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(charge_indicator, CONFIG_ZMK_LOG_LEVEL);
 
-/*
- * Kconfig options:
- * - CONFIG_CHARGE_INDICATOR (bool): Enable/disable this feature module.
- * - CONFIG_CHG_POLICY (bool): y = force LEDs OFF while charging (suppress widget),
- *                             n = show configured color while charging (suppress widget).
- * - CONFIG_CHG_COLOR (int, 0..7): Charging color code; default 1 (Red).
- *   Mapping: 0 Black(off), 1 Red, 2 Green, 3 Yellow(R+G), 4 Blue, 5 Magenta(R+B), 6 Cyan(G+B), 7 White(R+G+B).
- */
-#ifndef CONFIG_CHARGE_INDICATOR
-#define CONFIG_CHARGE_INDICATOR 1
-#endif
-#ifndef CONFIG_CHG_POLICY
-#define CONFIG_CHG_POLICY 0
-#endif
-#ifndef CONFIG_CHG_COLOR
-#define CONFIG_CHG_COLOR 1
-#endif
 
 /* Devicetree: Resolve charging status input from a chg_stat node via alias.
  * DT must provide:
@@ -95,6 +81,46 @@ static struct k_thread chg_maint_thread;
 static inline void led_red(bool on)   { gpio_pin_set(ledr_dev, LEDR_PIN, on ? 1 : 0); }
 static inline void led_green(bool on) { gpio_pin_set(ledg_dev, LEDG_PIN, on ? 1 : 0); }
 static inline void led_blue(bool on)  { gpio_pin_set(ledb_dev, LEDB_PIN, on ? 1 : 0); }
+
+/* Apply LED color based on color code (0-7). */
+static inline void apply_color_code(int color)
+{
+    LOG_DBG("Applying color code: %d", color);
+    switch (color) {
+        case 0: /* Black(off) */             led_red(false); led_green(false); led_blue(false); break;
+        case 1: /* Red */                    led_red(true);  led_green(false); led_blue(false); break;
+        case 2: /* Green */                  led_red(false); led_green(true);  led_blue(false); break;
+        case 3: /* Yellow(R+G) */            led_red(true);  led_green(true);  led_blue(false); break;
+        case 4: /* Blue */                   led_red(false); led_green(false); led_blue(true);  break;
+        case 5: /* Magenta(R+B) */           led_red(true);  led_green(false); led_blue(true);  break;
+        case 6: /* Cyan(G+B) */              led_red(false); led_green(true);  led_blue(true);  break;
+        case 7: /* White(R+G+B) */           led_red(true);  led_green(true);  led_blue(true);  break;
+        default: /* Fallback Red */          led_red(true);  led_green(false); led_blue(false); break;
+    }
+}
+
+/* Get battery level based color code. */
+#if IS_ENABLED(CONFIG_CHG_BATTERY_LEVEL_BASED_COLOR)
+static int get_battery_level_color(void)
+{
+    uint8_t battery_pct = zmk_battery_state_of_charge();
+    LOG_DBG("Battery level: %d%%", battery_pct);
+
+    if (battery_pct < 0 || battery_pct > 100) {
+        return CONFIG_CHG_BATTERY_COLOR_MISSING;
+    }
+
+    if (battery_pct < CONFIG_CHG_BATTERY_LEVEL_CRITICAL) {
+        return CONFIG_CHG_BATTERY_COLOR_CRITICAL;
+    } else if (battery_pct < CONFIG_CHG_BATTERY_LEVEL_LOW) {
+        return CONFIG_CHG_BATTERY_COLOR_LOW;
+    } else if (battery_pct < CONFIG_CHG_BATTERY_LEVEL_HIGH) {
+        return CONFIG_CHG_BATTERY_COLOR_MEDIUM;
+    } else {
+        return CONFIG_CHG_BATTERY_COLOR_HIGH;
+    }
+}
+#endif
 #endif
 
 /* Read raw physical level:
@@ -115,18 +141,15 @@ static void apply_charging_color(bool charging)
         /* Charging: force LEDs OFF, fully suppress widget output. */
         led_red(false); led_green(false); led_blue(false);
 #else
-        /* Charging: show selected color, suppress widget output. */
-        switch (CONFIG_CHG_COLOR) {
-            case 0: /* Black(off) */             led_red(false); led_green(false); led_blue(false); break;
-            case 1: /* Red */                    led_red(true);  led_green(false); led_blue(false); break;
-            case 2: /* Green */                  led_red(false); led_green(true);  led_blue(false); break;
-            case 3: /* Yellow(R+G) */            led_red(true);  led_green(true);  led_blue(false); break;
-            case 4: /* Blue */                   led_red(false); led_green(false); led_blue(true);  break;
-            case 5: /* Magenta(R+B) */           led_red(true);  led_green(false); led_blue(true);  break;
-            case 6: /* Cyan(G+B) */              led_red(false); led_green(true);  led_blue(true);  break;
-            case 7: /* White(R+G+B) */           led_red(true);  led_green(true);  led_blue(true);  break;
-            default: /* Fallback Red */          led_red(true);  led_green(false); led_blue(false); break;
-        }
+        /* Charging: show color based on configuration. */
+#if IS_ENABLED(CONFIG_CHG_BATTERY_LEVEL_BASED_COLOR)
+        /* Charging: show battery level based color, suppress widget output. */
+        int color = get_battery_level_color();
+        apply_color_code(color);
+#else
+        /* Charging: show fixed color, suppress widget output. */
+        apply_color_code(CONFIG_CHG_COLOR);
+#endif
 #endif
     } else {
         /* Not charging: keep LEDs OFF and fully delegate to rgbled_widget/others. */
@@ -146,6 +169,24 @@ static void chg_handler(const struct device *port, struct gpio_callback *cb, uin
     atomic_set(&is_charging, charging);
     apply_charging_color(charging);
 }
+
+/* Battery state changed event handler: update LED color if charging. */
+static int battery_state_changed_listener(const zmk_event_t *eh)
+{
+    const struct zmk_battery_state_changed *ev = as_zmk_battery_state_changed(eh);
+    if (ev == NULL) {
+        return -ENOTSUP;
+    }
+
+    if (atomic_get(&is_charging)) {
+        apply_charging_color(true);
+    }
+
+    return 0;
+}
+
+ZMK_LISTENER(charge_indicator, battery_state_changed_listener);
+ZMK_SUBSCRIPTION(charge_indicator, zmk_battery_state_changed);
 
 /* Maintenance thread:
  * - While charging: periodically reapply to suppress widget (prevent short blinks).

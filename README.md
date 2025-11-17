@@ -15,7 +15,7 @@ A ZMK feature module to indicate battery charging status on an RGB LED, designed
 
 - **Devicetree Driven**: Detects charging via a `chg_stat` node label, making it board-agnostic.
 - **Widget Coexistence**: Suppresses the `rgbled_widget` only during charging, allowing it to function normally otherwise.
-- **Configurable**: Choose to show a specific color or turn the LED off while charging.
+- **Configurable**: Choose to show color based on the current battery level or show a fixed color or turn the LED off while charging.
 - **Split-Friendly**: Each split half can indicate its own charging status.
 - **Lightweight**: Uses no heap and runs a static thread only when necessary.
 
@@ -109,6 +109,15 @@ Enable the feature and set your desired behavior in your `.conf` file.
 | `CONFIG_CHARGE_INDICATOR`       | **Required.** Enables the charge indicator feature.                                                     | `n`     |
 | `CONFIG_CHG_POLICY`             | Defines charging behavior: `n` to show a color, `y` to force the LED off.                               | `n`     |
 | `CONFIG_CHG_COLOR`              | Sets the color for charging (if policy is `n`). Values `0-7`.                                           | `Red (1)` |
+| `CONFIG_CHG_BATTERY_LEVEL_BASED_COLOR` | Use battery level based color instead of fixed color.                                                 | `y`     |
+| `CONFIG_CHG_BATTERY_LEVEL_HIGH`        | High battery level percentage.                                                                         | `80`    |
+| `CONFIG_CHG_BATTERY_LEVEL_LOW`         | Low battery level percentage.                                                                          | `20`    |
+| `CONFIG_CHG_BATTERY_LEVEL_CRITICAL`    | Critical battery level percentage.                                                                     | `5`     |
+| `CONFIG_CHG_BATTERY_COLOR_HIGH`        | Color for high battery level (above LEVEL_HIGH).                                                       | Green (`2`)     |
+| `CONFIG_CHG_BATTERY_COLOR_MEDIUM`      | Color for medium battery level (between LEVEL_LOW and LEVEL_HIGH).                                     | Yellow (`3`)     |
+| `CONFIG_CHG_BATTERY_COLOR_LOW`         | Color for low battery level (below LEVEL_LOW).                                                          | Red (`1`)     |
+| `CONFIG_CHG_BATTERY_COLOR_CRITICAL`    | Color for critical battery level (below LEVEL_CRITICAL).                                                | Magenta (`5`)     |
+| `CONFIG_CHG_BATTERY_COLOR_MISSING`     | Color for battery not detected.                                                                       | Black (`0`)     |
 
 <details>
 <summary>Mapping for color values</summary>
@@ -131,9 +140,24 @@ Enable the feature and set your desired behavior in your `.conf` file.
 # Enable the charge indicator
 CONFIG_CHARGE_INDICATOR=y
 
-# Show a blue color when charging
+# Show a blue color (regardless of the current battery level) when charging
 CONFIG_CHG_POLICY=n
 CONFIG_CHG_COLOR=4
+CONFIG_CHG_BATTERY_LEVEL_BASED_COLOR=n
+```
+
+```ini
+# Show a battery level based color when charging
+CONFIG_CHG_POLICY=n
+CONFIG_CHG_BATTERY_LEVEL_BASED_COLOR=y
+CONFIG_CHG_BATTERY_LEVEL_HIGH=90
+CONFIG_CHG_BATTERY_LEVEL_LOW=20
+CONFIG_CHG_BATTERY_LEVEL_CRITICAL=5
+CONFIG_CHG_BATTERY_COLOR_HIGH=2
+CONFIG_CHG_BATTERY_COLOR_MEDIUM=3
+CONFIG_CHG_BATTERY_COLOR_LOW=1
+CONFIG_CHG_BATTERY_COLOR_CRITICAL=5
+CONFIG_CHG_BATTERY_COLOR_MISSING=0
 ```
 
 ## Behavior
